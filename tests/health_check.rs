@@ -1,10 +1,12 @@
 use std::net::TcpListener;
 
+use once_cell::sync::Lazy;
+use secrecy::ExposeSecret;
 use sqlx::{Connection, Executor, PgConnection, PgPool};
 use uuid::Uuid;
 use zero2prod::{
     config::{get_config, DatabaseSettings},
-    startup::run,
+    startup::run, telemetry::{get_subscriber, init_subscriber},
 };
 
 pub struct TestApp {
@@ -12,8 +14,19 @@ pub struct TestApp {
     pub db_pool: PgPool,
 }
 
+static TRACING: Lazy<()> = Lazy::new(|| {
+    if std::env::var("TEST_LOG").is_ok() {
+        let sub = get_subscriber("test".into(), "debug".into(), std::io::stdout);
+        init_subscriber(sub);
+    } else {
+        let sub = get_subscriber("test".into(), "debug".into(), std::io::sink);
+        init_subscriber(sub);
+    }
+});
+
 // spawning the app is decoupled from the rest of the test locgic
 async fn spawn_app() -> TestApp {
+    Lazy::force(&TRACING);
     let listener = TcpListener::bind("127.0.0.1:0").expect("Failed to bind random port");
     let port = listener.local_addr().unwrap().port();
     let address = format!("http://127.0.0.1:{}", port);
@@ -26,7 +39,7 @@ async fn spawn_app() -> TestApp {
 }
 
 pub async fn configure_database(config: &DatabaseSettings) -> PgPool {
-    let mut con = PgConnection::connect(&config.connection_string_without_db())
+    let mut con = PgConnection::connect(&config.connection_string_without_db().expose_secret())
         .await
         .expect("failed to connect to db");
 
@@ -34,7 +47,7 @@ pub async fn configure_database(config: &DatabaseSettings) -> PgPool {
         .await
         .expect("failed to create db");
 
-    let pool = PgPool::connect(&config.connection_string())
+    let pool = PgPool::connect(&config.connection_string().expose_secret())
         .await
         .expect("failed to connect to db");
 
